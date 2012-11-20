@@ -1,0 +1,172 @@
+#!/bin/bash
+# A simple bash script to mass-generate fisheye distorted
+#	images/videos. Set the configurable parameters to a range of values  
+# 	delimited by space, enclosed in quotes, and you are ready to go!
+#	Possible parameter options are given in comments.
+#
+# Author : Sibi Antony (sibi [dot] antony [at] gmail [at] com)
+
+
+FFMPEG_BIN="/usr/local/bin/ffmpeg"
+FREI0R_PATH="/usr/lib64/frei0r-1/"
+
+# Give a list of files to be distorted. 
+# files="Garching.jpg Mars.jpg bucks.jpg orange.jpg"
+files="bricks.jpg"
+
+# Distortion amounts
+p_amount="0.7 0.775 0.8"
+
+# orto, equa, ster, equid
+p_fishtype="orto equa ster"
+
+# fill, cent, fit
+p_scaling="fit"
+
+# nn, bil, bic_sm, bic_sh, spline4, spline6, lanc
+p_interpol="bic_sm nn"
+
+# sqr, pal, ntsc, hdv
+p_aspect="sqr pal"
+
+function error
+{
+	echo "Error. $1"
+	exit 1
+}
+
+function ffmpeg_enfish
+{
+	amount=$1; fishtype=$2; scaling=$3; interpol=$4; aspect=$5; 
+
+	case $fishtype in
+		"equid")	v_fishtype=0.0
+				echo "Equal!"
+				;;
+		"orto") 	v_fishtype=0.26
+				echo "Orthoo!"
+				;;
+		"equa")		v_fishtype=0.51
+				echo "Equiarea"
+				;;
+		"ster") 	v_fishtype=0.76
+				;;
+		*)		error "invalid Type function!"
+				;;
+	esac
+	
+	case $scaling in
+		"fill")		v_scaling=0.0
+				;;	
+		"cent")		v_scaling=0.26
+				;;
+		"fit")		v_scaling=0.51
+				;;
+		"man")		v_scaling=0.76
+				;;
+		*)		error "invalid scaling option"		
+				;;
+	esac
+
+	case $interpol in
+		"nn")		v_interpol=0.0
+				;;
+		"bil")		v_interpol=0.15
+				;;
+		"bic_sm")	v_interpol=0.29
+				;;
+		"bic_sh")	v_interpol=0.43
+				;;
+		"spline4")	v_interpol=0.58
+				;;
+		"spline6")	v_interpol=0.72
+				;;
+		"lanc")		v_interpol=0.86
+				;;
+		*)		error "Invalid interpolator function"
+	esac
+
+	case $aspect in
+		"sqr")		v_aspect=0.0
+				;;
+		"pal")		v_aspect=0.21
+				;;
+		"ntsc")		v_aspect=0.41
+				;;
+		"hdv")		v_aspect=0.61
+				;;
+		"man")		v_aspect=0.81
+				;;
+		*)		error "Invalid aspect type"
+	esac
+
+	outfile="${filename}_${amount}_${fishtype}_${scaling}_${interpol}_${aspect}.${fileext}"
+	if [[ $cfg_novp -eq 0 ]]; then
+
+		# apply distortion
+		$FFMPEG_BIN -i $file -vf "movie=.transparent.png [watermark]; \
+				[in]frei0r=defish0r:$amount:n:$v_fishtype:$v_scaling:0.0:$v_interpol:$v_aspect:0.0 \
+				[distort]; [distort][watermark] overlay=0:0 [out]" -sameq -an $outdir/$outfile
+	else
+
+		echo "$FFMPEG_BIN -i $file -vf frei0r=defish0r:$amount:n:$v_fishtype:$v_scaling:0.0:$v_interpol:$v_aspect:0.0 -sameq -an $outdir/$outfile"
+		$FFMPEG_BIN -i $file -vf frei0r=defish0r:$amount:n:$v_fishtype:$v_scaling:0.0:$v_interpol:$v_aspect:0.0 -sameq -an $outdir/$outfile
+	fi
+	
+}
+export FREI0R_PATH
+#ffmpeg_enfish "0.5" "orto" "cent" "bic_sm" "sqr"
+
+# Enable/disable viewport mask
+cfg_novp=0
+
+outdir="out"
+mkdir $outdir
+
+for file in $files
+do
+	if [[ $cfg_novp -eq 0 ]]; then
+
+		# identify video/image aspect
+		img_aspect=$( $FFMPEG_BIN -i $file 2>&1 | grep "Stream #0:0" | awk -F',' '{ print $3 }' | awk '{ print $1 }' )
+		img_width=$( echo $img_aspect | awk -F'x' '{ print $1 }' )
+		img_height=$( echo $img_aspect | awk -F'x' '{ print $2 }' )
+		
+		img_w_cent=$( echo "$img_width / 2" | bc )
+		img_h_cent=$( echo "$img_height / 2" | bc )
+
+		# Coordinate for the circle radius from center.
+		img_circle_r=$img_height
+		if [[ $img_circle_r -gt $img_width ]]; then
+			img_circle_r=$img_width
+		fi
+
+		# generate overlay image
+		#convert -size $img_aspect xc:black -fill navy -draw "circle $img_w_cent,$img_h_cent $img_w_cent,$img_circle_r" .circle.png
+		#convert .circle.png  -fuzz 50% -transparent navy .transparent.png
+		convert -size $img_aspect xc:black \( -size $img_aspect xc:none -fill black \
+			-draw "circle $img_w_cent,$img_h_cent $img_w_cent,$img_circle_r" \) -alpha Set -compose Dst_Out -composite .transparent.png
+		# apply distortion
+	
+		filename=$(basename "$file")
+		fileext="${filename##*.}"
+		filename="${filename%.*}"
+	fi
+
+	for p_i in $p_interpol
+	do
+		for p_a in $p_amount
+		do
+			for p_f in $p_fishtype
+			do
+				for p_s in $p_scaling
+				do
+					for p_as in $p_aspect
+					do 
+						ffmpeg_enfish $p_a $p_f $p_s $p_i $p_as
+					done
+				done
+			done
+		done
+	done
+done

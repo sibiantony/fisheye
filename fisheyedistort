@@ -1,0 +1,235 @@
+#!/bin/bash
+# A simple bash script to distort videos/images  to fisheye
+#	using ffmpeg and frei0r plugins. 
+# Author   : Sibi Antony (sibi [dot] antony [at] gmail [dot] com)
+#
+# Requires : ffmpeg compiled with frei0r plugins enabled
+#		Imagemagick for overlay image generation
+#
+# Usage    : fisheyedistort [<options>] <filename>
+#		<filename>	: A video or image file
+# Options
+#		-noviewport	: Disable dome viewport overlay
+#		-d <amount>	: Amount of distortion. Range 0.0 - 1.0
+#		-a 		: Enable audio. Audio filtered out by default.
+#		-o <outfile>	: Supply an optional output file name.
+
+FFMPEG_BIN="/usr/local/bin/ffmpeg"
+FREI0R_PATH="/usr/lib64/frei0r-1/"
+
+# Some tunables for frei0r plugin. 
+# More details can be obtained from the plugin README
+#	http://www.piksel.no/trac/browser/src/filter/defish0r/README
+# The mapping from the below human-readable strings to ffmpeg values
+#	(0.0 - 1.0 range) happens in frei0r_enfish(). 
+
+# Amount of distortion
+p_amount="0.72"
+
+# orto, equa, ster
+p_fishtype="orto"
+
+# fill, cent, fit
+p_scaling="fit"
+
+# nn, bil, bic_sm, bic_sh, spline4, spline6, lanc
+p_interpol="bic_sm"
+
+# sqr, pal, ntsc, hdv
+p_aspect="sqr"
+
+
+function usage
+{
+	if [[ $1 != "" ]]; then
+		printf "$1\n";
+	fi
+
+	echo "	
+	Usage    : fisheyedistort [<options>] <file>
+		file		: Video or image input file
+	Options
+		-noviewport	: Disable dome viewport overlay 
+		-d <amount>	: Amount of distortion. Range 0.0 - 1.0
+		-a 		: Enable audio. Audio filtered out by default
+		-o <outfile>	: Supply an optional output file name"
+
+}
+	
+function ffmpeg_enfish
+{
+	amount=$1; fishtype=$2; scaling=$3; interpol=$4; aspect=$5; 
+
+	case $fishtype in
+		"equid")	v_fishtype=0.0
+				;;
+		"orto") 	v_fishtype=0.26
+				;;
+		"equa")		v_fishtype=0.51
+				;;
+		"ster") 	v_fishtype=0.76
+				;;
+		*)		echo "Invalid Type function!"
+				exit 1
+				;;
+	esac
+	
+	case $scaling in
+		"fill")		v_scaling=0.0
+				;;	
+		"cent")		v_scaling=0.26
+				;;
+		"fit")		v_scaling=0.51
+				;;
+		"man")		v_scaling=0.76
+				;;
+		*)		echo "Invalid scaling option!"		
+				exit 1
+				;;
+	esac
+
+	case $interpol in
+		"nn")		v_interpol=0.0
+				;;
+		"bil")		v_interpol=0.15
+				;;
+		"bic_sm")	v_interpol=0.29
+				;;
+		"bic_sh")	v_interpol=0.43
+				;;
+		"spline4")	v_interpol=0.58
+				;;
+		"spline6")	v_interpol=0.72
+				;;
+		"lanc")		v_interpol=0.86
+				;;
+		*)		echo "Invalid interpolator function"
+				exit 1
+				;;
+	esac
+
+	case $aspect in
+		"sqr")		v_aspect=0.0
+				;;
+		"pal")		v_aspect=0.21
+				;;
+		"ntsc")		v_aspect=0.41
+				;;
+		"hdv")		v_aspect=0.61
+				;;
+		"man")		v_aspect=0.81
+				;;
+		*)		echo "Invalid aspect type"
+				exit 1
+				;;
+	esac
+
+	if [[ $cfg_outfile -eq 0 ]]; then
+		outfile="${filename}_${amount}_${fishtype}_${scaling}_${interpol}_${aspect}.${fileext}"
+	fi
+
+	if [[ $cfg_novp -eq 0 ]]; then
+
+		# identify video/image aspect
+		img_aspect=$( $FFMPEG_BIN -i $inpfile 2>&1 | grep "Stream #0:0" | awk -F',' '{ print $3 }' | awk '{ print $1 }' )
+		img_width=$( echo $img_aspect | awk -F'x' '{ print $1 }' )
+		img_height=$( echo $img_aspect | awk -F'x' '{ print $2 }' )
+		
+		img_w_cent=$( echo "$img_width / 2" | bc )
+		img_h_cent=$( echo "$img_height / 2" | bc )
+
+		# Coordinate for the circle radius from center.
+		img_circle_r="$img_height"
+		if [[ $img_height -gt $img_width ]]; then
+			img_circle_r=$( echo "$img_h_cent + $img_w_cent" | bc -q )
+		fi
+
+		# generate overlay image
+		convert -size $img_aspect xc:black \( -size $img_aspect xc:none -fill black \
+			-draw "circle $img_w_cent,$img_h_cent $img_w_cent,$img_circle_r" \) -alpha Set -compose Dst_Out -composite $file_overlay
+
+		# apply distortion
+		$FFMPEG_BIN -i $inpfile -vf "movie=$file_overlay [watermark]; \
+				[in]frei0r=defish0r:$amount:n:$v_fishtype:$v_scaling:0.0:$v_interpol:$v_aspect:0.0 \
+				[distort]; [distort][watermark] overlay=0:0 [out]" -sameq $cfg_audio $outfile
+	else
+		
+		$FFMPEG_BIN -i $inpfile -vf frei0r=defish0r:$amount:n:$v_fishtype:$v_scaling:0.0:$v_interpol:$v_aspect:0.0 \
+				-sameq $cfg_audio $outfile
+	fi
+	
+}
+
+export FREI0R_PATH
+
+# Viewport overlay enabled by default
+cfg_novp=0
+# Disable audio by default.
+cfg_audio=" -an"
+# Output file option
+cfg_outfile=0
+
+file_overlay=".transparent.png"
+
+if [[ $# -lt 1 ]]; then
+	usage "Error. At least one argument expected"
+	exit 1
+fi 
+
+while [ $# -gt 0 ]
+do
+	case $1 in 
+		-noviewport) 
+			# Disable viewport overlay
+			cfg_novp=1
+			;;
+		-d)
+			# Amount of distortion, range 0.0 - 1.0
+			shift
+			p_amount=$1
+			test_amount=$( echo "$p_amount > 0.0 && $p_amount < 1.0" | bc -q )
+			if [[ $test_amount -ne 1 ]]; then
+				usage "Error. Invalid distortion amount"
+				exit 1
+			fi
+			;;
+		-a)
+			# Enable audio. 
+			cfg_audio=""
+			;;
+		-o)	
+			# Output file name.
+			shift
+			outfile=$1
+			cfg_outfile=1
+			;;
+		-h)
+			usage
+			exit
+			;;
+		*)
+			if [[ -f $1 ]]; then
+				inpfile=$1
+				filename=$(basename "$inpfile")
+				fileext="${filename##*.}"
+				filename="${filename%.*}"
+			else
+				usage "Error. Invalid option or incorrect file"
+				exit 1
+			fi
+			;;
+	esac
+	shift
+done
+
+if [[ ! -f $inpfile ]]; then
+	usage "Error. Cannot find input file"
+	exit 1
+fi
+
+ffmpeg_enfish $p_amount $p_fishtype $p_scaling $p_interpol $p_aspect
+
+# Cleanup!
+if [[ -f $file_overlay ]]; then
+	rm -f $file_overlay
+fi
